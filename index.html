@@ -22,6 +22,22 @@
     iframe { width:100%; height:100%; border:0; background:#fff }
     #install { position:fixed; right:12px; top:7px; background:#0ea5e9; color:#fff; border:0; border-radius:10px; padding:8px 12px; font-weight:700; }
     .hint { position:fixed; left:12px; bottom:12px; font-size:12px; color:#475569; background:#ffffffcc; padding:6px 8px; border-radius:8px; }
+
+    /* --- HF Wakeup Overlay --- */
+    .wakeup {
+      position: fixed; inset: 0; display:flex; align-items:center; justify-content:center;
+      background: rgba(255,255,255,0.9); backdrop-filter: blur(2px); z-index: 9999;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    .wakeup .box{
+      width:min(520px, 92vw); border-radius:16px; padding:20px; box-shadow:0 10px 30px rgba(0,0,0,.07); background:#fff; text-align:center;
+    }
+    .wakeup .title{ font-size:18px; font-weight:700; margin-bottom:8px }
+    .wakeup .desc{ font-size:14px; opacity:.8; margin-bottom:16px }
+    .wakeup .log{ height:110px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align:left; border:1px dashed #ccc; border-radius:10px; padding:10px; background:#fafafa; }
+    .wakeup button{ margin-top:14px; padding:10px 14px; border:none; border-radius:10px; background:#0ea5e9; color:#fff; font-weight:600; cursor:pointer }
+    .wakeup .tips{ font-size:12px; margin-top:8px; opacity:.7 }
+    .wakeup.hide{ display:none }
   </style>
 </head>
 <body>
@@ -29,9 +45,21 @@
     <div class="brand">Go Travel · 带你说走就走</div>
     <button id="install">安装</button>
   </div>
+
+  <!-- 唤醒层 -->
+  <div id="wakeup" class="wakeup">
+    <div class="box">
+      <div class="title">正在唤醒 Hugging Face 应用…</div>
+      <div class="desc">首次访问 Space 会休眠，通常需要 10~60 秒启动。</div>
+      <div id="log" class="log"></div>
+      <button id="retry">手动再次唤醒</button>
+      <div class="tips">如果久等无响应，请检查网络，或稍后重试。</div>
+    </div>
+  </div>
+
   <div class="wrap">
     <!-- 嵌入 Hugging Face Space / Gradio 网址 -->
-    <iframe id="app" src="https://davidmdox-gotravel-uipro.hf.space/" allow="clipboard-read; clipboard-write; microphone; camera"></iframe>
+    <iframe id="app" data-src="https://davidmdox-gotravel-uipro.hf.space/" allow="clipboard-read; clipboard-write; microphone; camera"></iframe>
   </div>
   <div class="hint">iPhone：用 Safari 打开 → 分享 → 添加到主屏幕</div>
 
@@ -41,7 +69,7 @@
       window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js?v=1').catch(console.error));
     }
 
-    // 安装按钮：桌面/安卓可触发，iOS 只给提示
+    // 安装按钮逻辑
     let deferredPrompt = null;
     const installBtn = document.getElementById('install');
     window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; });
@@ -54,6 +82,75 @@
       }
       alert('iPhone 请用 Safari：分享 → 添加到主屏幕');
     });
+
+    // —— Hugging Face Space 唤醒逻辑 ——
+    (function() {
+      const frame = document.getElementById('app');
+      const overlay = document.getElementById('wakeup');
+      const logEl = document.getElementById('log');
+      const retryBtn = document.getElementById('retry');
+      const HF_URL = (frame.getAttribute('data-src') || '').replace(/\/$/, '');
+      const MAX_TRIES = 15;
+      const baseDelay = 1500;
+      let tries = 0;
+      let started = Date.now();
+
+      function log(msg) {
+        const ts = new Date().toLocaleTimeString();
+        logEl.innerText += `[${ts}] ${msg}\n`;
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      async function pingOnce(signal) {
+        const url = HF_URL + '/?wake=' + Date.now();
+        try {
+          await fetch(url, { mode: 'no-cors', cache: 'no-store', redirect: 'follow', signal });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      async function wakeLoop() {
+        log('开始唤醒…');
+        await pingOnce();
+        frame.src = HF_URL;
+        let ready = false;
+
+        frame.addEventListener('load', () => {
+          ready = true;
+          const sec = ((Date.now() - started)/1000).toFixed(1);
+          log('已加载完成，用时 ' + sec + ' 秒');
+          overlay.classList.add('hide');
+        }, { once: true });
+
+        while (!ready && tries < MAX_TRIES) {
+          tries++;
+          const ok = await pingOnce();
+          const delay = Math.min(10000, baseDelay * Math.pow(1.2, tries));
+          log((ok ? '唤醒请求已发送' : '唤醒请求失败') + `（第 ${tries} 次），等待 ${Math.round(delay)}ms…`);
+          await new Promise(r => setTimeout(r, delay));
+        }
+
+        setTimeout(() => {
+          if (!ready) {
+            log('超时未能确认加载完成，可能仍在启动。您可继续等待或点击“手动再次唤醒”。');
+          }
+        }, 45000);
+      }
+
+      retryBtn.addEventListener('click', async () => {
+        log('手动唤醒…');
+        tries = 0; started = Date.now();
+        await wakeLoop();
+      });
+
+      if (HF_URL) {
+        wakeLoop();
+      } else {
+        log('未找到 Hugging Face 目标地址，请检查 iframe data-src。');
+      }
+    })();
   </script>
 </body>
 </html>
